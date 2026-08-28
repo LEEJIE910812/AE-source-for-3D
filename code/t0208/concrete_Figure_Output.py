@@ -37,7 +37,7 @@ MAX_TIME_STEPS_BY_TEST = {
 # work without internet.
 PLOTLY_JS_MODE = "cdn"
 
-# 時間軸最多取幾個時間點。每一格都會更新 AE 點、PCA 平面與兩套裂縫 network。
+# 時間軸最多取幾個時間點。每一格都會更新 AE 點、internal plane 與兩套裂縫 network。
 # 大型資料均勻保留 60 格，維持完整動態效果並避免 HTML 再膨脹到約 1 GB。
 MAX_TIME_STEPS = 60
 
@@ -60,7 +60,7 @@ SCENE_RANGE_PADDING = 0.45
 # True 會畫表面裂縫網路；這是用靠近表面的 AE 點做 graph/skeleton，不是 theta band。
 SHOW_SURFACE_CRACK_NETWORK = True
 
-# True 會畫內部破裂面；這是用 AE 點雲做 PCA 擬合出的半透明斜平面。
+# True 會畫內部破裂面；這是用 AE 點雲做 weighted plane 擬合出的半透明斜平面。
 SHOW_INTERNAL_CRACK_PLANE = True
 
 # True 會畫內部裂縫網路；這是用 AE 點的 3D 距離做 graph/skeleton。
@@ -120,18 +120,22 @@ SURFACE_CRACK_MAX_NODE_DEGREE = 4
 CRACK_LINE_COLOR = "rgba(16,36,145,0.98)"
 CRACK_LINE_WIDTH = 6
 
-# ======================== 內部 PCA 破裂面與 network 設定 ========================
+# ======================== 內部破裂面與 network 設定 ========================
 # AE 點數少於這個數量時不擬合內部破裂面，避免少量點造成不穩定平面。
 INTERNAL_PLANE_MIN_POINTS = 8
 
-# PCA 平面的半尺寸，單位 m；實際顯示時仍會被裁在圓柱內部。
+# internal plane 的半尺寸，單位 m；實際顯示時仍會被裁在圓柱內部。
 INTERNAL_PLANE_HALF_SIZE = 0.12
 
 # 內部平面網格解析度；越大平面越細，但檔案也會較大。
 INTERNAL_PLANE_GRID_STEPS = 48
 
-# 內部破裂面：全部 AE 點先 PCA，保留離初始平面最近的 95% 點，再重新 PCA 畫單一平面。
-INTERNAL_PLANE_COVERAGE = 0.95
+# 內部破裂面權重：越靠內部、越靠中段、越在局部密集區、殘差越小，權重越高。
+INTERNAL_PLANE_MIN_WEIGHT = 0.12
+INTERNAL_PLANE_DEPTH_WEIGHT_POWER = 1.2
+INTERNAL_PLANE_MIDDLE_Z_SIGMA_RATIO = 0.35
+INTERNAL_PLANE_DENSITY_RADIUS = 0.045
+INTERNAL_PLANE_RESIDUAL_SCALE = 1200.0
 
 # 內部破裂面的透明度與顏色。
 INTERNAL_PLANE_OPACITY = 0.34
@@ -498,9 +502,15 @@ def empty_surface_crack_network_trace():
     )
 
 
-def fit_crack_plane(points):
-    center = points.mean(axis=0)
-    shifted = points - center
+def fit_crack_plane(points, weights=None):
+    if weights is None:
+        center = points.mean(axis=0)
+        shifted = points - center
+    else:
+        weights = np.asarray(weights, dtype=float)
+        weights = np.clip(weights, INTERNAL_PLANE_MIN_WEIGHT, None)
+        center = np.average(points, axis=0, weights=weights)
+        shifted = (points - center) * np.sqrt(weights[:, None])
     _, _, vh = np.linalg.svd(shifted, full_matrices=False)
     normal = vh[-1] / max(np.linalg.norm(vh[-1]), 1e-12)
     return center, normal, vh[0], vh[1]
@@ -510,16 +520,49 @@ def point_plane_signed_distances(points, center, normal):
     return (points - center) @ normal
 
 
-def pca95_fit_crack_plane(points):
-    center0, normal0, _, _ = fit_crack_plane(points)
-    distance0 = np.abs(point_plane_signed_distances(points, center0, normal0))
-    keep_count = int(np.ceil(points.shape[0] * INTERNAL_PLANE_COVERAGE))
-    keep_count = max(INTERNAL_PLANE_MIN_POINTS, min(points.shape[0], keep_count))
-    keep_indexes = np.argsort(distance0)[:keep_count]
-    fit_points = points[keep_indexes]
-    center, normal, u, v = fit_crack_plane(fit_points)
-    cutoff = float(np.max(distance0[keep_indexes])) if keep_indexes.size else 0.0
-    return center, normal, u, v, points.shape[0], fit_points.shape[0], cutoff
+def internal_plane_point_weights(points, residuals=None):
+    depth_cm = inward_depth_cm(points[:, 0], points[:, 1])
+    max_depth_cm = max(float(cylinder_radius) * 100.0, 1e-12)
+    depth_ratio = np.clip(depth_cm / max_depth_cm, 0.0, 1.0)
+    depth_weight = INTERNAL_PLANE_MIN_WEIGHT + (1.0 - INTERNAL_PLANE_MIN_WEIGHT) * (
+        depth_ratio ** INTERNAL_PLANE_DEPTH_WEIGHT_POWER
+    )
+
+    middle_z = 0.5 * (float(zmin) + float(zmax))
+    specimen_height = max(float(zmax) - float(zmin), 1e-12)
+    sigma_z = max(specimen_height * INTERNAL_PLANE_MIDDLE_Z_SIGMA_RATIO, 1e-12)
+    z_offset = (points[:, 2] - middle_z) / sigma_z
+    middle_weight = INTERNAL_PLANE_MIN_WEIGHT + (1.0 - INTERNAL_PLANE_MIN_WEIGHT) * np.exp(
+        -0.5 * z_offset ** 2
+    )
+
+    if points.shape[0] > 1:
+        distance = np.linalg.norm(points[:, None, :] - points[None, :, :], axis=2)
+        np.fill_diagonal(distance, np.inf)
+        local_neighbors = np.count_nonzero(distance <= INTERNAL_PLANE_DENSITY_RADIUS, axis=1)
+        density_ratio = local_neighbors / max(float(np.max(local_neighbors)), 1.0)
+        density_weight = INTERNAL_PLANE_MIN_WEIGHT + (1.0 - INTERNAL_PLANE_MIN_WEIGHT) * density_ratio
+    else:
+        density_weight = np.ones(points.shape[0], dtype=float)
+
+    if residuals is None:
+        residual_weight = np.ones(points.shape[0], dtype=float)
+    else:
+        residual_values = np.asarray(residuals, dtype=float)
+        residual_values = np.where(np.isfinite(residual_values), np.maximum(residual_values, 0.0), 0.0)
+        residual_weight = INTERNAL_PLANE_MIN_WEIGHT + (1.0 - INTERNAL_PLANE_MIN_WEIGHT) / (
+            1.0 + residual_values / max(INTERNAL_PLANE_RESIDUAL_SCALE, 1e-12)
+        )
+
+    weights = depth_weight * middle_weight * density_weight * residual_weight
+    return np.clip(weights, INTERNAL_PLANE_MIN_WEIGHT, None)
+
+
+def weighted_fit_internal_plane(points, residuals=None):
+    weights = internal_plane_point_weights(points, residuals=residuals)
+    center, normal, u, v = fit_crack_plane(points, weights=weights)
+    effective_count = float(np.sum(weights) ** 2 / max(np.sum(weights ** 2), 1e-12))
+    return center, normal, u, v, points.shape[0], effective_count, float(np.min(weights)), float(np.max(weights))
 
 
 def clipped_plane_grid(center, normal, u, v, offset):
@@ -554,13 +597,13 @@ def empty_internal_crack_plane_trace():
         colorscale=[[0.0, INTERNAL_PLANE_COLOR], [1.0, INTERNAL_PLANE_COLOR]],
         opacity=INTERNAL_PLANE_OPACITY,
         showscale=False,
-        name="internal 95% PCA plane",
+        name="internal plane",
         showlegend=SHOW_INTERNAL_CRACK_PLANE,
         hoverinfo="skip",
     )
 
 
-def internal_crack_plane_trace(xs, ys, zs, visible_mask):
+def internal_crack_plane_trace(xs, ys, zs, visible_mask, residual_values=None):
     if not SHOW_INTERNAL_CRACK_PLANE:
         return empty_internal_crack_plane_trace()
 
@@ -571,10 +614,16 @@ def internal_crack_plane_trace(xs, ys, zs, visible_mask):
     points = np.column_stack([xs[visible], ys[visible], zs[visible]])
     finite = np.all(np.isfinite(points), axis=1)
     points = points[finite]
+    residuals = None
+    if residual_values is not None:
+        residuals = np.asarray(residual_values, dtype=float)[visible][finite]
     if points.shape[0] < INTERNAL_PLANE_MIN_POINTS:
         return empty_internal_crack_plane_trace()
 
-    center, normal, u, v, total_count, kept_count, cutoff = pca95_fit_crack_plane(points)
+    center, normal, u, v, total_count, effective_count, min_weight, max_weight = weighted_fit_internal_plane(
+        points,
+        residuals=residuals,
+    )
     x_grid, y_grid, z_grid = clipped_plane_grid(center, normal, u, v, 0.0)
     if not np.any(np.isfinite(x_grid)):
         return empty_internal_crack_plane_trace()
@@ -588,14 +637,14 @@ def internal_crack_plane_trace(xs, ys, zs, visible_mask):
         colorscale=[[0.0, INTERNAL_PLANE_COLOR], [1.0, INTERNAL_PLANE_COLOR]],
         opacity=INTERNAL_PLANE_OPACITY,
         showscale=False,
-        name="internal 95% PCA plane",
+        name="internal plane",
         showlegend=SHOW_INTERNAL_CRACK_PLANE,
-        customdata=np.full(x_grid.shape, cutoff * 1000.0),
+        customdata=np.full(x_grid.shape + (2,), [min_weight, max_weight]),
         hovertemplate=(
-            "internal PCA crack plane<br>"
-            f"nearest points kept={INTERNAL_PLANE_COVERAGE:.0%}<br>"
-            f"points={total_count}, used={kept_count}<br>"
-            "initial distance cutoff=%{customdata:.2f} mm<extra></extra>"
+            "internal plane<br>"
+            "weighted by depth, middle zone, density, residual<br>"
+            f"points={total_count}, effective={effective_count:.1f}<br>"
+            "weight range=%{customdata[0]:.2f}-%{customdata[1]:.2f}<extra></extra>"
         ),
         lighting=dict(ambient=0.82, diffuse=0.45, roughness=0.85, specular=0.05),
     )
@@ -1210,8 +1259,9 @@ def write_interactive_html(result, method=METHOD):
 
     def dynamic_traces(time_mask, data_mask, ae_name):
         visible_mask = np.asarray(time_mask, dtype=bool) & np.asarray(data_mask, dtype=bool)
+        plane_mask = visible_mask & keep_filtered_mask
         return [
-            internal_crack_plane_trace(xs, ys, zs, visible_mask),
+            internal_crack_plane_trace(xs, ys, zs, plane_mask, residual_values),
             internal_crack_network_trace(xs, ys, zs, visible_mask),
             ae_trace(
                 xs,
@@ -1415,6 +1465,7 @@ def write_static_overview(result, method=METHOD):
     color_min, color_max = point_color_range(color_values)
     edge_residual_mask, depth_values, residual_values = edge_high_residual_mask(result, xs, ys, blocks)
     visible = np.ones_like(relative_times, dtype=bool)
+    plane_visible = visible & ~edge_residual_mask
     traces = []
     surface_trace = specimen_surface_trace()
     if surface_trace is not None:
@@ -1422,7 +1473,7 @@ def write_static_overview(result, method=METHOD):
     traces.extend([
         wireframe_trace(),
         sensor_trace(),
-        internal_crack_plane_trace(xs, ys, zs, visible),
+        internal_crack_plane_trace(xs, ys, zs, plane_visible, residual_values),
         internal_crack_network_trace(xs, ys, zs, visible),
         ae_trace(
             xs,
