@@ -10,7 +10,6 @@ import plotly.graph_objects as go
 # interactive_html：輸出可以手動旋轉、拖曳時間軸的 3D HTML。
 # static_overview：輸出一張沒有時間軸、顯示所有 AE 點的靜態 HTML。
 RUN_MODE = "interactive_html"
-METHOD = "hypodd"  
 
 # 只要改這裡：要輸出哪些 results pkl。
 RESULTS_FILES = (
@@ -1305,7 +1304,7 @@ def slider_label(index, current_time, total_steps):
     return f"{current_time:.2f}" if index in label_indexes or index == 0 or index == total_steps - 1 else  ""
 
 #根據AE定位結果result，產生一個可以播放的 3D AE Viewer HTML。
-def write_interactive_html(result, method=METHOD):
+def write_interactive_html(result, method="hypodd"):
     xs, ys, zs, t0s, blocks = event_points(result, method)
     #如果某個AE點的座標或時間不是有限數值，就不要畫。
     finite = np.isfinite(xs) & np.isfinite(ys) & np.isfinite(zs) & np.isfinite(t0s)
@@ -1526,7 +1525,7 @@ def write_interactive_html(result, method=METHOD):
     return output_path
 
 
-def write_static_overview(result, method=METHOD):
+def write_static_overview(result, method="hypodd"):
     xs, ys, zs, t0s, blocks = event_points(result, method)
     finite = np.isfinite(xs) & np.isfinite(ys) & np.isfinite(zs) & np.isfinite(t0s)
     xs, ys, zs, t0s, blocks = xs[finite], ys[finite], zs[finite], t0s[finite], blocks[finite]
@@ -1617,11 +1616,11 @@ def export_current_results(results_path):
             if item.get("events"):
                 print(
                     f"Exporting {test_name} from {Path(results_path).name}: "
-                    f"{METHOD}, {', '.join(POINT_COLOR_MODES)}"
+                    f"hypodd, {', '.join(POINT_COLOR_MODES)}"
                 )
                 for color_mode in POINT_COLOR_MODES:
                     POINT_COLOR_MODE = color_mode
-                    write_interactive_html(item, method=METHOD)
+                    write_interactive_html(item, method="hypodd")
             else:
                 print(f"Skip {test_name}: no events")
     elif RUN_MODE == "static_overview":
@@ -1630,11 +1629,11 @@ def export_current_results(results_path):
             if item.get("events"):
                 print(
                     f"Exporting {test_name} from {Path(results_path).name}: "
-                    f"{METHOD}, {', '.join(POINT_COLOR_MODES)}"
+                    f"hypodd, {', '.join(POINT_COLOR_MODES)}"
                 )
                 for color_mode in POINT_COLOR_MODES:
                     POINT_COLOR_MODE = color_mode
-                    write_static_overview(item, method=METHOD)
+                    write_static_overview(item, method="hypodd")
             else:
                 print(f"Skip {test_name}: no events")
     else:
