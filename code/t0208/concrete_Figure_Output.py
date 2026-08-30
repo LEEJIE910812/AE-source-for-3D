@@ -139,18 +139,14 @@ INTERNAL_PLANE_GRID_STEPS = 48
 # 計算式：
 # depth_ratio = inward_depth_cm / (cylinder_radius * 100)，範圍 0~1。
 # depth_weight = 0.12 + 0.88 * depth_ratio ** 1.2。
-# middle_z = (zmin + zmax) / 2。
-# sigma_z = (zmax - zmin) * 0.35。
-# middle_weight = 0.12 + 0.88 * exp(-0.5 * ((z - middle_z) / sigma_z) ** 2)。
 # local_neighbors = 半徑 0.045 m 內的附近 AE 點數。
 # density_ratio = local_neighbors / max(local_neighbors)，範圍 0~1。
 # density_weight = 0.12 + 0.88 * density_ratio ** 1.6。
 # residual_weight = 0.12 + 0.88 / (1 + velocity_rmse / 1200)。
 # 密集度的 1.6 次方已經寫進 density_weight 裡，所以不用多一個額外調整參數。
-# 最後總權重：w = depth_weight * middle_weight * density_weight * residual_weight。
+# 最後總權重：w = depth_weight * density_weight * residual_weight。
 INTERNAL_PLANE_MIN_WEIGHT = 0.12
 INTERNAL_PLANE_DEPTH_WEIGHT_POWER = 1.2
-INTERNAL_PLANE_MIDDLE_Z_SIGMA_RATIO = 0.35
 INTERNAL_PLANE_DENSITY_RADIUS = 0.045
 INTERNAL_PLANE_RESIDUAL_SCALE = 1200.0
 
@@ -545,14 +541,6 @@ def internal_plane_point_weights(points, residuals=None):
         depth_ratio ** INTERNAL_PLANE_DEPTH_WEIGHT_POWER
     )
 
-    middle_z = 0.5 * (float(zmin) + float(zmax))
-    specimen_height = max(float(zmax) - float(zmin), 1e-12)
-    sigma_z = max(specimen_height * INTERNAL_PLANE_MIDDLE_Z_SIGMA_RATIO, 1e-12)
-    z_offset = (points[:, 2] - middle_z) / sigma_z
-    middle_weight = INTERNAL_PLANE_MIN_WEIGHT + (1.0 - INTERNAL_PLANE_MIN_WEIGHT) * np.exp(
-        -0.5 * z_offset ** 2
-    )
-
     if points.shape[0] > 1:
         distance = np.linalg.norm(points[:, None, :] - points[None, :, :], axis=2)
         np.fill_diagonal(distance, np.inf)
@@ -571,7 +559,7 @@ def internal_plane_point_weights(points, residuals=None):
             1.0 + residual_values / max(INTERNAL_PLANE_RESIDUAL_SCALE, 1e-12)
         )
 
-    weights = depth_weight * middle_weight * density_weight * residual_weight
+    weights = depth_weight * density_weight * residual_weight
     return np.clip(weights, INTERNAL_PLANE_MIN_WEIGHT, None)
 
 
