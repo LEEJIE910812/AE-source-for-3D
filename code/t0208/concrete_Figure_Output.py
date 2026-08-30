@@ -144,15 +144,14 @@ INTERNAL_PLANE_GRID_STEPS = 48
 # middle_weight = 0.12 + 0.88 * exp(-0.5 * ((z - middle_z) / sigma_z) ** 2)。
 # local_neighbors = 半徑 0.045 m 內的附近 AE 點數。
 # density_ratio = local_neighbors / max(local_neighbors)，範圍 0~1。
-# density_weight = 0.12 + 0.88 * density_ratio。
+# density_weight = 0.12 + 0.88 * density_ratio ** 1.6。
 # residual_weight = 0.12 + 0.88 / (1 + velocity_rmse / 1200)。
-# 密集度比深度更重要一點，所以 density_weight 會再做 1.6 次方。
-# 最後總權重：w = depth_weight * middle_weight * density_weight ** 1.6 * residual_weight。
+# 密集度的 1.6 次方已經寫進 density_weight 裡，所以不用多一個額外調整參數。
+# 最後總權重：w = depth_weight * middle_weight * density_weight * residual_weight。
 INTERNAL_PLANE_MIN_WEIGHT = 0.12
 INTERNAL_PLANE_DEPTH_WEIGHT_POWER = 1.2
 INTERNAL_PLANE_MIDDLE_Z_SIGMA_RATIO = 0.35
 INTERNAL_PLANE_DENSITY_RADIUS = 0.045
-INTERNAL_PLANE_DENSITY_WEIGHT_POWER = 1.6
 INTERNAL_PLANE_RESIDUAL_SCALE = 1200.0
 
 # 內部破裂面的透明度與顏色。
@@ -559,7 +558,7 @@ def internal_plane_point_weights(points, residuals=None):
         np.fill_diagonal(distance, np.inf)
         local_neighbors = np.count_nonzero(distance <= INTERNAL_PLANE_DENSITY_RADIUS, axis=1)
         density_ratio = local_neighbors / max(float(np.max(local_neighbors)), 1.0)
-        density_weight = INTERNAL_PLANE_MIN_WEIGHT + (1.0 - INTERNAL_PLANE_MIN_WEIGHT) * density_ratio
+        density_weight = INTERNAL_PLANE_MIN_WEIGHT + (1.0 - INTERNAL_PLANE_MIN_WEIGHT) * (density_ratio ** 1.6)
     else:
         density_weight = np.ones(points.shape[0], dtype=float)
 
@@ -572,7 +571,7 @@ def internal_plane_point_weights(points, residuals=None):
             1.0 + residual_values / max(INTERNAL_PLANE_RESIDUAL_SCALE, 1e-12)
         )
 
-    weights = depth_weight * middle_weight * (density_weight ** INTERNAL_PLANE_DENSITY_WEIGHT_POWER) * residual_weight
+    weights = depth_weight * middle_weight * density_weight * residual_weight
     return np.clip(weights, INTERNAL_PLANE_MIN_WEIGHT, None)
 
 
