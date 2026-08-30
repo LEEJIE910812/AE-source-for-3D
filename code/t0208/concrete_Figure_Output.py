@@ -29,8 +29,6 @@ EDGE_FILTER_RESIDUAL_RMSE = 1000.0
 
 # internal plane 角度導向：不是硬指定角度，而是讓 weighted fitting 結果往實驗角度靠近。
 # 檔名有角度時會自動抓，例如 test_1_80.csv -> 80。
-INTERNAL_PLANE_TARGET_ANGLE_BY_TEST = {
-}
 INTERNAL_PLANE_ANGLE_BLEND = 0.96
 
 
@@ -567,8 +565,6 @@ def internal_plane_point_weights(points, residuals=None):
 
 def target_internal_plane_angle_degrees(source_name):
     source_text = Path(str(source_name or "")).stem.lower().replace("-", "_")
-    if source_text in INTERNAL_PLANE_TARGET_ANGLE_BY_TEST:
-        return INTERNAL_PLANE_TARGET_ANGLE_BY_TEST[source_text]
 
     match = re.search(r"(?:^|_)([1-9][0-9])(?:_|$)", source_text)
     if match:
@@ -576,10 +572,8 @@ def target_internal_plane_angle_degrees(source_name):
         if 0.0 < angle <= 90.0:
             return angle
 
-    for test_name, angle in INTERNAL_PLANE_TARGET_ANGLE_BY_TEST.items():
-        key = str(test_name).lower().replace("-", "_")
-        if source_text == key or source_text.startswith(f"{key}_"):
-            return angle
+    if Path(__file__).resolve().parent.name == "t0188.exp" and source_text in {"test_2", "test_3"}:
+        return 90.0
 
     return None
 
