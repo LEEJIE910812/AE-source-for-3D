@@ -42,6 +42,8 @@ The included example uses the `t0208` experiment. The workflow is:
 
 6. Run `concrete_event_vs_time.py` if event count versus time plots are needed.
 
+7. Run `build_ae_github_pages` generate a website.
+
 ## Example Code Files
 
 - `code/t0208/concrete_Arrival_Pick.py`  
