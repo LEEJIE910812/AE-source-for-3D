@@ -58,16 +58,16 @@ VIEW_MAX_WIDTH = 1560
 FONT_FAMILY = "Segoe UI, Microsoft JhengHei, Noto Sans TC, Arial, sans-serif"
 
 # 3D 座標軸額外留白比例；調大可避免放大或旋轉時模型被切到。
-SCENE_RANGE_PADDING = 0.45
+SCENE_RANGE_PADDING = 0.5
 
 # ======================== 裂縫與試體顯示開關 ========================
-# True 會畫表面裂縫網路；這是用靠近表面的 AE 點做 graph/skeleton，不是 theta band。
+# True 會畫表面裂縫網路
 SHOW_SURFACE_CRACK_NETWORK = True
 
-# True 會畫內部破裂面；這是用 AE 點雲做 weighted plane 擬合出的半透明斜平面。
+# True 會畫內部破裂面
 SHOW_INTERNAL_CRACK_PLANE = True
 
-# True 會畫內部裂縫網路；這是用 AE 點的 3D 距離做 graph/skeleton。
+# True 會畫內部裂縫網路
 SHOW_INTERNAL_CRACK_NETWORK = True
 
 # True 會畫淡淡的透明圓柱外表，讓旋轉時仍看得出試體形狀。
@@ -134,11 +134,25 @@ INTERNAL_PLANE_HALF_SIZE = 0.12
 # 內部平面網格解析度；越大平面越細，但檔案也會較大。
 INTERNAL_PLANE_GRID_STEPS = 48
 
-# 內部破裂面權重：越靠內部、越靠中段、越在局部密集區、殘差越小，權重越高。
+# internal plane 不是直接用所有 AE 點平均去畫，而是先幫每個 AE 點算權重 w。
+# 權重越高，該 AE 點對 internal plane 的中心與方向影響越大。
+# 計算式：
+# depth_ratio = inward_depth_cm / (cylinder_radius * 100)，範圍 0~1。
+# depth_weight = 0.12 + 0.88 * depth_ratio ** 1.2。
+# middle_z = (zmin + zmax) / 2。
+# sigma_z = (zmax - zmin) * 0.35。
+# middle_weight = 0.12 + 0.88 * exp(-0.5 * ((z - middle_z) / sigma_z) ** 2)。
+# local_neighbors = 半徑 0.045 m 內的附近 AE 點數。
+# density_ratio = local_neighbors / max(local_neighbors)，範圍 0~1。
+# density_weight = 0.12 + 0.88 * density_ratio。
+# residual_weight = 0.12 + 0.88 / (1 + velocity_rmse / 1200)。
+# 密集度比深度更重要一點，所以 density_weight 會再做 1.6 次方。
+# 最後總權重：w = depth_weight * middle_weight * density_weight ** 1.6 * residual_weight。
 INTERNAL_PLANE_MIN_WEIGHT = 0.12
 INTERNAL_PLANE_DEPTH_WEIGHT_POWER = 1.2
 INTERNAL_PLANE_MIDDLE_Z_SIGMA_RATIO = 0.35
 INTERNAL_PLANE_DENSITY_RADIUS = 0.045
+INTERNAL_PLANE_DENSITY_WEIGHT_POWER = 1.6
 INTERNAL_PLANE_RESIDUAL_SCALE = 1200.0
 
 # 內部破裂面的透明度與顏色。
@@ -558,7 +572,7 @@ def internal_plane_point_weights(points, residuals=None):
             1.0 + residual_values / max(INTERNAL_PLANE_RESIDUAL_SCALE, 1e-12)
         )
 
-    weights = depth_weight * middle_weight * density_weight * residual_weight
+    weights = depth_weight * middle_weight * (density_weight ** INTERNAL_PLANE_DENSITY_WEIGHT_POWER) * residual_weight
     return np.clip(weights, INTERNAL_PLANE_MIN_WEIGHT, None)
 
 
@@ -1616,7 +1630,7 @@ def export_current_results(results_path):
             if item.get("events"):
                 print(
                     f"Exporting {test_name} from {Path(results_path).name}: "
-                    f"hypodd, {', '.join(POINT_COLOR_MODES)}"
+                    f"{', '.join(POINT_COLOR_MODES)}"
                 )
                 for color_mode in POINT_COLOR_MODES:
                     POINT_COLOR_MODE = color_mode
@@ -1629,7 +1643,7 @@ def export_current_results(results_path):
             if item.get("events"):
                 print(
                     f"Exporting {test_name} from {Path(results_path).name}: "
-                    f"hypodd, {', '.join(POINT_COLOR_MODES)}"
+                    f"{', '.join(POINT_COLOR_MODES)}"
                 )
                 for color_mode in POINT_COLOR_MODES:
                     POINT_COLOR_MODE = color_mode
