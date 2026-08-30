@@ -142,13 +142,13 @@ INTERNAL_PLANE_GRID_STEPS = 48
 # local_neighbors = 半徑 0.045 m 內的附近 AE 點數。
 # density_ratio = local_neighbors / max(local_neighbors)，範圍 0~1。
 # density_weight = 0.12 + 0.88 * density_ratio ** 1.6。
-# residual_weight = 0.12 + 0.88 / (1 + velocity_rmse / 1200)。
+# residual_weight = 0.12 + 0.88 / (1 + velocity_rmse / 1000)。
 # 密集度的 1.6 次方已經寫進 density_weight 裡，所以不用多一個額外調整參數。
 # 最後總權重：w = depth_weight * density_weight * residual_weight。
 INTERNAL_PLANE_MIN_WEIGHT = 0.12
 INTERNAL_PLANE_DEPTH_WEIGHT_POWER = 1.2
 INTERNAL_PLANE_DENSITY_RADIUS = 0.045
-INTERNAL_PLANE_RESIDUAL_SCALE = 1200.0
+INTERNAL_PLANE_RESIDUAL_SCALE = 1000.0
 
 # 內部破裂面的透明度與顏色。
 INTERNAL_PLANE_OPACITY = 0.34
