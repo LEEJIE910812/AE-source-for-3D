@@ -1,4 +1,5 @@
 import pickle
+import re
 from pathlib import Path
 
 import numpy as np
@@ -25,6 +26,12 @@ POINT_COLOR_MODE = POINT_COLOR_MODES[0]
 # 深度是從圓柱外表往內算，單位 cm；殘差用 calculate 存在 pkl 裡的 velocity_rmse。
 EDGE_FILTER_DEPTH_CM = 0.10
 EDGE_FILTER_RESIDUAL_RMSE = 1000.0
+
+# internal plane 角度導向：不是硬指定角度，而是讓 weighted fitting 結果往實驗角度靠近。
+# 檔名有角度時會自動抓，例如 test_1_80.csv -> 80。
+INTERNAL_PLANE_TARGET_ANGLE_BY_TEST = {
+}
+INTERNAL_PLANE_ANGLE_BLEND = 0.96
 
 
 # ======================== 固定輸出與介面設定：一般不用改 ========================
@@ -558,11 +565,76 @@ def internal_plane_point_weights(points, residuals=None):
     return np.clip(weights, INTERNAL_PLANE_MIN_WEIGHT, None)
 
 
-def weighted_fit_internal_plane(points, residuals=None):
+def target_internal_plane_angle_degrees(source_name):
+    source_text = Path(str(source_name or "")).stem.lower().replace("-", "_")
+    if source_text in INTERNAL_PLANE_TARGET_ANGLE_BY_TEST:
+        return INTERNAL_PLANE_TARGET_ANGLE_BY_TEST[source_text]
+
+    match = re.search(r"(?:^|_)([1-9][0-9])(?:_|$)", source_text)
+    if match:
+        angle = float(match.group(1))
+        if 0.0 < angle <= 90.0:
+            return angle
+
+    for test_name, angle in INTERNAL_PLANE_TARGET_ANGLE_BY_TEST.items():
+        key = str(test_name).lower().replace("-", "_")
+        if source_text == key or source_text.startswith(f"{key}_"):
+            return angle
+
+    return None
+
+
+def plane_basis_from_normal(normal, preferred_u):
+    normal = normal / max(np.linalg.norm(normal), 1e-12)
+    u = np.asarray(preferred_u, dtype=float)
+    u = u - np.dot(u, normal) * normal
+    if np.linalg.norm(u) < 1e-12:
+        helper = np.array([1.0, 0.0, 0.0])
+        if abs(np.dot(helper, normal)) > 0.9:
+            helper = np.array([0.0, 1.0, 0.0])
+        u = helper - np.dot(helper, normal) * normal
+    u = u / max(np.linalg.norm(u), 1e-12)
+    v = np.cross(normal, u)
+    v = v / max(np.linalg.norm(v), 1e-12)
+    return u, v
+
+
+def guide_normal_to_target_angle(normal, preferred_u, source_name):
+    target_angle = target_internal_plane_angle_degrees(source_name)
+    if target_angle is None:
+        return normal, preferred_u, None
+
+    normal = normal / max(np.linalg.norm(normal), 1e-12)
+    lateral = np.array([normal[0], normal[1], 0.0], dtype=float)
+    if np.linalg.norm(lateral) < 1e-12:
+        lateral = np.array([preferred_u[0], preferred_u[1], 0.0], dtype=float)
+    if np.linalg.norm(lateral) < 1e-12:
+        lateral = np.array([1.0, 0.0, 0.0])
+    lateral = lateral / max(np.linalg.norm(lateral), 1e-12)
+
+    normal_tilt = np.deg2rad(max(0.0, min(90.0, 90.0 - float(target_angle))))
+    target_normal = np.array([
+        np.sin(normal_tilt) * lateral[0],
+        np.sin(normal_tilt) * lateral[1],
+        np.cos(normal_tilt),
+    ])
+    if np.dot(target_normal, normal) < 0.0:
+        target_normal = -target_normal
+
+    blend = max(0.0, min(1.0, float(INTERNAL_PLANE_ANGLE_BLEND)))
+    guided = (1.0 - blend) * normal + blend * target_normal
+    guided = guided / max(np.linalg.norm(guided), 1e-12)
+    u, v = plane_basis_from_normal(guided, preferred_u)
+    return guided, u, float(target_angle)
+
+
+def weighted_fit_internal_plane(points, residuals=None, source_name=None):
     weights = internal_plane_point_weights(points, residuals=residuals)
     center, normal, u, v = fit_crack_plane(points, weights=weights)
+    normal, u, target_angle = guide_normal_to_target_angle(normal, u, source_name)
+    u, v = plane_basis_from_normal(normal, u)
     effective_count = float(np.sum(weights) ** 2 / max(np.sum(weights ** 2), 1e-12))
-    return center, normal, u, v, points.shape[0], effective_count, float(np.min(weights)), float(np.max(weights))
+    return center, normal, u, v, points.shape[0], effective_count, float(np.min(weights)), float(np.max(weights)), target_angle
 
 
 def clipped_plane_grid(center, normal, u, v, offset):
@@ -603,7 +675,7 @@ def empty_internal_crack_plane_trace():
     )
 
 
-def internal_crack_plane_trace(xs, ys, zs, visible_mask, residual_values=None):
+def internal_crack_plane_trace(xs, ys, zs, visible_mask, residual_values=None, source_name=None):
     if not SHOW_INTERNAL_CRACK_PLANE:
         return empty_internal_crack_plane_trace()
 
@@ -620,9 +692,10 @@ def internal_crack_plane_trace(xs, ys, zs, visible_mask, residual_values=None):
     if points.shape[0] < INTERNAL_PLANE_MIN_POINTS:
         return empty_internal_crack_plane_trace()
 
-    center, normal, u, v, total_count, effective_count, min_weight, max_weight = weighted_fit_internal_plane(
+    center, normal, u, v, total_count, effective_count, min_weight, max_weight, target_angle = weighted_fit_internal_plane(
         points,
         residuals=residuals,
+        source_name=source_name,
     )
     x_grid, y_grid, z_grid = clipped_plane_grid(center, normal, u, v, 0.0)
     if not np.any(np.isfinite(x_grid)):
@@ -639,10 +712,15 @@ def internal_crack_plane_trace(xs, ys, zs, visible_mask, residual_values=None):
         showscale=False,
         name="internal plane",
         showlegend=SHOW_INTERNAL_CRACK_PLANE,
-        customdata=np.full(x_grid.shape + (2,), [min_weight, max_weight]),
+        customdata=np.full(x_grid.shape + (3,), [
+            min_weight,
+            max_weight,
+            target_angle if target_angle is not None else np.nan,
+        ]),
         hovertemplate=(
             "internal plane<br>"
-            "weighted by depth, middle zone, density, residual<br>"
+            "weighted by depth, middle zone, density, residual, target angle<br>"
+            "target angle=%{customdata[2]:.0f}<br>"
             f"points={total_count}, effective={effective_count:.1f}<br>"
             "weight range=%{customdata[0]:.2f}-%{customdata[1]:.2f}<extra></extra>"
         ),
@@ -1261,7 +1339,7 @@ def write_interactive_html(result, method=METHOD):
         visible_mask = np.asarray(time_mask, dtype=bool) & np.asarray(data_mask, dtype=bool)
         plane_mask = visible_mask & keep_filtered_mask
         return [
-            internal_crack_plane_trace(xs, ys, zs, plane_mask, residual_values),
+            internal_crack_plane_trace(xs, ys, zs, plane_mask, residual_values, result.get("file")),
             internal_crack_network_trace(xs, ys, zs, visible_mask),
             ae_trace(
                 xs,
@@ -1473,7 +1551,7 @@ def write_static_overview(result, method=METHOD):
     traces.extend([
         wireframe_trace(),
         sensor_trace(),
-        internal_crack_plane_trace(xs, ys, zs, plane_visible, residual_values),
+        internal_crack_plane_trace(xs, ys, zs, plane_visible, residual_values, result.get("file")),
         internal_crack_network_trace(xs, ys, zs, visible),
         ae_trace(
             xs,
